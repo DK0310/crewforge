@@ -8,7 +8,7 @@
 > Python 3.13; `uv run pytest` is green (5/5); the `soc_crew` runs end to end both headless
 > (`scripts/run_crew.py`) and over HTTP/SSE (`POST /runs` → `GET /runs/{id}/stream`), producing waves
 > `[[triage], [threat_intel, forensics]]`, validated worker JSON, a streamed prose `final`, and a memory write.
-> Verified at commit `__PHASE0_HASH__` on the `main` branch. See [Running it](#running-it).
+> Verified at commit `93acd7d` on the `main` branch. See [Running it](#running-it).
 >
 > Companion docs: [`BUILD_SPEC.md`](BUILD_SPEC.md) is the pre-code blueprint (the *intended* design);
 > [`PROJECT_VISION.md`](PROJECT_VISION.md) is the what/why. Where this file and `BUILD_SPEC.md` disagree on a
