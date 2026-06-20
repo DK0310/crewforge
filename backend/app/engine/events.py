@@ -13,6 +13,11 @@ from collections.abc import AsyncIterator
 from backend.app.models import DoneEvent
 from backend.app.models.run import RunEvent
 
+# Sentinel yielded by `stream(keepalive=…)` when the queue has been idle for the
+# keep-alive interval. The API turns it into an SSE comment line so idle proxies
+# don't drop the connection. It is not a `RunEvent`.
+KEEPALIVE = object()
+
 
 class Emitter:
     """A single-run async queue of `RunEvent`s."""
@@ -21,12 +26,27 @@ class Emitter:
         self._queue: asyncio.Queue = asyncio.Queue()
 
     async def emit(self, event) -> None:
-        await self._queue.put(event)
+        # The queue is unbounded, so `put_nowait` never blocks. Keeping `emit`
+        # await-free means it can be called safely from a task's cleanup path
+        # (e.g. after CancelledError) without re-raising at a suspension point.
+        self._queue.put_nowait(event)
 
-    async def stream(self) -> AsyncIterator[RunEvent]:
-        """Yield events until (and including) the terminal `DoneEvent`."""
+    async def stream(self, keepalive: float | None = None) -> AsyncIterator:
+        """Yield events until (and including) the terminal `DoneEvent`.
+
+        If `keepalive` (seconds) is set, yield the `KEEPALIVE` sentinel whenever
+        the queue stays idle that long. Racing `queue.get()` with a timeout is safe
+        (cancelling a plain `get()` cleanly removes its waiter).
+        """
         while True:
-            event = await self._queue.get()
+            if keepalive is None:
+                event = await self._queue.get()
+            else:
+                try:
+                    event = await asyncio.wait_for(self._queue.get(), keepalive)
+                except asyncio.TimeoutError:
+                    yield KEEPALIVE
+                    continue
             yield event
             if isinstance(event, DoneEvent):
                 break

@@ -31,48 +31,47 @@ Nothing else is trustworthy until this passes. No new features here — just mak
 
 ---
 
-## Phase 1 — Persistence & run history
+## Phase 1 — Persistence & run history ✅
 
-Closes the two storage gaps in ARCHITECTURE.md §8/§10. Run state currently lives only in process memory.
+Closed the two storage gaps in ARCHITECTURE.md §8/§10. Run state was in process memory only.
 
-- [ ] Add `langgraph-checkpoint-sqlite` to [`pyproject.toml`](pyproject.toml) deps (ARCHITECTURE.md §2 lists this
-      as the missing dependency).
-- [ ] Wire the async SQLite checkpointer into `graph.compile(checkpointer=…)`
-      ([`graph_builder.py:79`](backend/app/engine/graph_builder.py#L79)); key by `run_id` (thread_id), DB path
-      from `settings.checkpoint_db` (already reserved in [`settings.py`](backend/app/settings.py)).
-- [ ] Manage the checkpointer's async lifecycle in the FastAPI lifespan
-      ([`main.py`](backend/app/main.py)) and pass it through the runner.
-- [ ] Persist `RunRecord`s beyond process memory (currently in-memory at
-      [`runner.py:50`](backend/app/engine/runner.py#L50)) so `GET /runs/{id}` survives a restart; back
-      `GET /runs/{id}` from the checkpoint/history store.
-- [ ] Add a `GET /runs` list endpoint (run history) if the UI will need it.
-- [ ] Tests: a run can be fetched after a simulated restart.
-- [ ] Update ARCHITECTURE.md §2/§8/§10 (remove the "deferred" notes, fix line refs).
-- 🎯 **Acceptance:** restart the server mid/after a run and `GET /runs/{id}` still returns its record.
+- [x] Added `langgraph-checkpoint-sqlite` + `aiosqlite` to [`pyproject.toml`](pyproject.toml).
+- [x] Wired the async SQLite checkpointer into `graph.compile(checkpointer=…)`
+      ([`graph_builder.py:83`](backend/app/engine/graph_builder.py#L83)); run with `thread_id == run_id`
+      ([`runner.py:136-137`](backend/app/engine/runner.py#L136-L137)), DB from `settings.checkpoint_db`.
+- [x] `AsyncSqliteSaver` lifecycle managed in the FastAPI lifespan ([`main.py:30`](backend/app/main.py#L30));
+      attached to the runner via `runner.configure(...)`.
+- [x] Durable `RunRecord`s via a dedicated `RunStore`
+      ([`persistence/run_store.py`](backend/app/persistence/run_store.py)) in `runs.sqlite`; runner persists at
+      start/running/end; `GET /runs/{id}` falls back to the store after restart.
+- [x] Added `GET /runs` list endpoint (run history, newest first).
+- [x] Tests: 4 new in [`tests/test_run_store.py`](tests/test_run_store.py) (roundtrip, upsert, restart,
+      runner-after-restart). Suite 9/9 green.
+- [x] Updated ARCHITECTURE.md §1/§2/§3/§5/§7/§8/§9/§10.
+- 🎯 **Acceptance:** ✅ met — ran `soc_crew` over SSE, killed the server, restarted: `GET /runs/{id}` returned
+      the full record (status `done`, all workers, answer) and `GET /runs` listed it.
 
 ---
 
-## Phase 2 — Backend hardening
+## Phase 2 — Backend hardening ✅
 
-Robustness items implied by ARCHITECTURE.md §10 and the spec's file-upload path. No UI yet.
+Robustness items from ARCHITECTURE.md §10 and the spec's file-upload path. No UI yet.
 
-- [ ] **File upload** ([`BUILD_SPEC.md` API surface], spec's `uploaded_file`): multipart endpoint that extracts
-      text (or stores a path) and feeds it into the run as `uploaded_file`. Keep extraction in the API layer, not
-      the engine.
-- [ ] **SSE reconnection / multi-consumer** (ARCHITECTURE.md §10 "single SSE consumer"): decide policy — either
-      document single-consumer as intended, or buffer/replay events so a reconnecting client resumes. Add SSE
-      heartbeat/keep-alive comments to survive idle proxies.
-- [ ] **Ollama failure UX**: surface a clear `error` event when Ollama is unreachable or the model is missing
-      ([`ollama_client.py`](backend/app/llm/ollama_client.py) raises `OllamaError`); make sure it ends the run
-      with `error` + `done`, not a hang.
-- [ ] **Run cancellation**: endpoint to cancel an in-flight run (cancel the runner's asyncio task; emit `error`/`done`).
-- [ ] **Context-window budget**: revisit Leader prompt assembly caps (`_MAX_ARRAY_ITEMS`/`_MAX_STR_LEN`,
-      [`leader.py:73-108`](backend/app/engine/nodes/leader.py#L73-L108)) and Manager memory `k`; make them
-      configurable in [`settings.py`](backend/app/settings.py).
-- [ ] **Tests**: config-loader validation errors (bad id, missing worker, plan ⊄ workers), JSON
-      validate-and-repair path ([`worker.py:83-114`](backend/app/engine/nodes/worker.py#L83-L114)), and an
-      end-to-end engine test with a mocked Ollama client (no live model).
-- 🎯 **Acceptance:** killing Ollama mid-run yields a clean `error`+`done`; uploaded text reaches a worker.
+- [x] **File upload** — `POST /runs/upload` (multipart) extracts text in the API
+      ([`_extract_text`, `api/runs.py:109`](backend/app/api/runs.py#L109)) and feeds it as `uploaded_file`; the
+      Manager + Worker prompts now include the capped upload (it was silently ignored before).
+- [x] **SSE policy** — single-consumer documented on the endpoint; keep-alive comment every 15 s via the
+      `KEEPALIVE` sentinel ([`events.py`](backend/app/engine/events.py)) so idle proxies don't drop the stream.
+- [x] **Ollama failure UX** — clearer "cannot reach Ollama" message; worker failures become `error` results,
+      Manager/Leader failures are caught by `_execute` → `error` + `done` (never a hang). Covered by a fake-client test.
+- [x] **Run cancellation** — `POST /runs/{id}/cancel`; `_execute` catches `CancelledError`, marks `cancelled`,
+      emits `error` + `done`. `Emitter.emit` uses `put_nowait` so cleanup emits are cancellation-safe.
+- [x] **Context-window budget** — `max_upload_chars`, `manager_memory_k`, `leader_max_array_items`,
+      `leader_max_str_len` now in [`settings.py`](backend/app/settings.py).
+- [x] **Tests** — `tests/test_engine.py` (happy path, outage→error+done, JSON repair, cancel via fake Ollama),
+      `tests/test_config_loader.py`, `tests/test_prompt_utils.py`. Suite **21/21** green.
+- 🎯 **Acceptance:** ✅ met — killing the LLM mid-run yields `error`+`done` (fake-client test); an uploaded log's
+      IOC (`198.51.100.77`, present only in the file) reached the triage worker and the final answer, live.
 
 ---
 

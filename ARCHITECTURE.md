@@ -4,11 +4,14 @@
 > with per-crew memory). This document describes the system **as it exists in code today**, with claims
 > pointing at real files and line ranges.
 >
-> **Verification status:** ✅ **executed end-to-end against a live Ollama** (Phase 0). `uv sync` resolves on
-> Python 3.13; `uv run pytest` is green (5/5); the `soc_crew` runs end to end both headless
-> (`scripts/run_crew.py`) and over HTTP/SSE (`POST /runs` → `GET /runs/{id}/stream`), producing waves
-> `[[triage], [threat_intel, forensics]]`, validated worker JSON, a streamed prose `final`, and a memory write.
-> Verified at commit `93acd7d` on the `main` branch. See [Running it](#running-it).
+> **Verification status:** ✅ **executed end-to-end against a live Ollama.** `uv sync` resolves on Python 3.13;
+> `uv run pytest` is green (21/21); the `soc_crew` runs end to end both headless (`scripts/run_crew.py`) and over
+> HTTP/SSE (`POST /runs` → `GET /runs/{id}/stream`), producing waves `[[triage], [threat_intel, forensics]]`,
+> validated worker JSON, a streamed prose `final`, and a memory write.
+> **Phase 1 (persistence)** verified: after a full server restart, `GET /runs/{id}` returns the run from
+> `runs.sqlite`; graph state is checkpointed to `checkpoints.sqlite`. **Phase 2 (hardening)** verified: a file
+> upload's IOC reached the triage worker live, run cancellation ends `cancelled`, and an Ollama outage ends a run
+> `error` + `done` (tested with a fake client). See [Running it](#running-it).
 >
 > Companion docs: [`BUILD_SPEC.md`](BUILD_SPEC.md) is the pre-code blueprint (the *intended* design);
 > [`PROJECT_VISION.md`](PROJECT_VISION.md) is the what/why. Where this file and `BUILD_SPEC.md` disagree on a
@@ -27,9 +30,11 @@ shell that starts a run and serializes the engine's event stream as Server-Sent 
 ([`backend/app/api/runs.py`](backend/app/api/runs.py)). The engine is domain-agnostic — all domain knowledge
 lives in agent YAML under [`config/`](config/), never in `engine/`.
 
-State of the slice: build-order steps 1–5 from [`CLAUDE.md`](.claude/CLAUDE.md) are implemented (schemas + config
-loading, Ollama client, engine, FastAPI + SSE, memory). Step 6 (frontend) and the SQLite checkpointer are **not
-yet built** — see [§10](#10-known-issues--deferred).
+State: build-order steps 1–5 from [`CLAUDE.md`](.claude/CLAUDE.md) are implemented (schemas + config loading,
+Ollama client, engine, FastAPI + SSE, memory), plus **Phase 1 persistence** (LangGraph SQLite checkpointer +
+durable run history) and **Phase 2 hardening** (file upload, run cancellation, Ollama-failure handling,
+configurable context budget, SSE keep-alive). Step 6 (frontend) is **not yet built** —
+see [§10](#10-known-issues--deferred).
 
 ## 2. Tech stack
 
@@ -46,6 +51,7 @@ first `uv sync` (Python provisioned: **3.13.0**).
 | Orchestration | LangGraph | 1.2.6 | [`backend/app/engine/graph_builder.py`](backend/app/engine/graph_builder.py) |
 | LLM + embeddings | Ollama (local HTTP API) | — | [`backend/app/llm/ollama_client.py`](backend/app/llm/ollama_client.py) |
 | Vector memory | Chroma (persistent, per-crew collection) | 1.5.9 | [`backend/app/memory/crew_memory.py`](backend/app/memory/crew_memory.py) |
+| Run persistence | LangGraph SQLite checkpointer + aiosqlite | 3.1.0 / 0.22.1 | [`main.py`](backend/app/main.py), [`persistence/run_store.py`](backend/app/persistence/run_store.py) |
 | Config format | YAML (pyyaml) | 6.0.3 | [`backend/app/config_loader.py`](backend/app/config_loader.py) |
 | Output validation | jsonschema | 4.26.0 | [`backend/app/engine/json_utils.py`](backend/app/engine/json_utils.py) |
 | Package manager | `uv` | 0.11.14 | [`pyproject.toml`](pyproject.toml) |
@@ -55,12 +61,9 @@ first `uv sync` (Python provisioned: **3.13.0**).
 > graph build + run are verified (§ verification status). Default model tags are `qwen2.5:7b` (workers + roles)
 > and `nomic-embed-text` (memory), matching the locally installed models.
 
-**Deviations from `BUILD_SPEC.md`:**
-- **No SQLite checkpointer yet.** The spec lists a LangGraph SQLite checkpointer; the graph currently compiles
-  with no checkpointer ([`graph_builder.py:79`](backend/app/engine/graph_builder.py#L79)), and run results are
-  kept in memory by the runner instead. The seam is clean (pass a `checkpointer=` to `.compile()`). See
-  [§10](#10-known-issues--deferred).
-- **`langgraph-checkpoint-sqlite` is not yet a dependency** — add it when the checkpointer lands.
+**Deviations from `BUILD_SPEC.md`:** none material at the backend level. The SQLite checkpointer (a spec item)
+is now wired ([`graph_builder.py:83`](backend/app/engine/graph_builder.py#L83), opened in the
+[`main.py`](backend/app/main.py) lifespan). The frontend (spec §) is not built yet.
 
 ## 3. Project structure
 
@@ -95,14 +98,16 @@ crewforge/
 │   │
 │   ├── llm/ollama_client.py           # async streaming generate() + embed(); the ONLY Ollama caller
 │   ├── memory/crew_memory.py          # Chroma per-crew: read() (Manager) / write() (Leader)
+│   ├── persistence/run_store.py       # aiosqlite RunRecord store (durable run history)
 │   │
 │   ├── engine/                        # the orchestration engine — domain-agnostic
 │   │   ├── state.py                   # CrewState (TypedDict) + the `results` merge reducer
 │   │   ├── planner.py                 # pure: dependencies → execution waves; cycle detection
 │   │   ├── json_utils.py              # tolerant JSON extract + jsonschema validate
-│   │   ├── events.py                  # Emitter (asyncio.Queue) carrying RunEvents to the SSE layer
+│   │   ├── prompt_utils.py            # shared prompt helpers (capped uploaded-file block)
+│   │   ├── events.py                  # Emitter (queue) + KEEPALIVE; carries RunEvents to SSE
 │   │   ├── graph_builder.py           # build(CrewConfig) → compiled LangGraph + plan
-│   │   ├── runner.py                  # run lifecycle: start / run_events / get_record; Runner singleton
+│   │   ├── runner.py                  # run lifecycle: start / run_events / get_record / list; persists records
 │   │   └── nodes/
 │   │       ├── manager.py             # plan + dispatch; the ONLY memory reader
 │   │       ├── worker.py              # generic worker factory; stream + validate-and-repair; tool seam
@@ -111,7 +116,7 @@ crewforge/
 │   └── api/                           # thin FastAPI routers
 │       ├── agents.py                  # GET/POST/PUT over config/agents
 │       ├── crews.py                   # GET/POST/PUT over config/crews
-│       └── runs.py                    # POST /runs, GET /runs/{id}/stream (SSE), GET /runs/{id}
+│       └── runs.py                    # POST /runs(+/upload), /runs/{id}/stream, /cancel, GET /runs(/{id})
 │
 ├── scripts/run_crew.py                # headless run (no FastAPI/SSE) — exercises the engine directly
 └── tests/test_planner.py              # unit tests for the pure planner
@@ -152,28 +157,32 @@ layered topological sort that raises `PlanError` naming the agents in a cycle
 
 **Nodes.**
 - **Manager** ([`nodes/manager.py`](backend/app/engine/nodes/manager.py)): emits `agent_status`, calls
-  `crew_memory.read` (the only reader), asks the LLM for a `{worker_id: task}` map, and writes `tasks` + `plan`
-  into state. A malformed/missing task falls back to a generic per-worker task
-  ([`manager.py:77-81`](backend/app/engine/nodes/manager.py#L77-L81)) so a Manager hiccup never kills the run.
+  `crew_memory.read` (the only reader, top-`manager_memory_k`), asks the LLM for a `{worker_id: task}` map, and
+  writes `tasks` + `plan` into state. Its prompt includes any uploaded file (capped). A malformed/missing task
+  falls back to a generic per-worker task
+  ([`manager.py:96-100`](backend/app/engine/nodes/manager.py#L96-L100)) so a Manager hiccup never kills the run.
 - **Worker** ([`nodes/worker.py`](backend/app/engine/nodes/worker.py)): one generic factory
-  ([`make_worker_node`, `worker.py:31`](backend/app/engine/nodes/worker.py#L31)), never a node per agent. It
+  ([`make_worker_node`, `worker.py:32`](backend/app/engine/nodes/worker.py#L32)), never a node per agent. It
   reads only the upstream outputs it depends on
-  ([`worker.py:117-124`](backend/app/engine/nodes/worker.py#L117-L124)), streams tokens out, then validates output
-  against the agent's `output_schema` with **one repair retry**
-  ([`worker.py:83-114`](backend/app/engine/nodes/worker.py#L83-L114)) before recording an `error` result. The
+  ([`worker.py:120-127`](backend/app/engine/nodes/worker.py#L120-L127)), assembles a prompt that includes the
+  capped uploaded file ([`worker.py:130-154`](backend/app/engine/nodes/worker.py#L130-L154)), streams tokens out,
+  then validates output against the agent's `output_schema` with **one repair retry**
+  ([`worker.py:86-118`](backend/app/engine/nodes/worker.py#L86-L118)) before recording an `error` result. The
   reserved **tool seam** is a documented comment block at
-  [`worker.py:49-54`](backend/app/engine/nodes/worker.py#L49-L54) — no tool execution in v1.
+  [`worker.py:52-57`](backend/app/engine/nodes/worker.py#L52-L57) — no tool execution in v1.
 - **Leader** ([`nodes/leader.py`](backend/app/engine/nodes/leader.py)): streams a prose answer tagged
   `__leader__`, then calls `crew_memory.write` (the only writer). It passes **selected, summarized** structured
-  fields to its prompt ([`leader.py:73-108`](backend/app/engine/nodes/leader.py#L73-L108)) — long arrays/strings
-  are capped (`_MAX_ARRAY_ITEMS`, `_MAX_STR_LEN`) — as the defense against blowing the context window.
+  fields to its prompt ([`leader.py:76-116`](backend/app/engine/nodes/leader.py#L76-L116)) — long arrays/strings
+  are capped (`leader_max_array_items`, `leader_max_str_len` in [`settings.py`](backend/app/settings.py)) — as
+  the defense against blowing the context window.
 
 **Streaming out.** Nodes never format SSE. They push `RunEvent`s onto an
-[`Emitter`](backend/app/engine/events.py#L17) (an `asyncio.Queue`). The runner drains it and the API serializes
-each event. Token events are emitted chunk-by-chunk as Ollama streams
-([`worker.py:144-154`](backend/app/engine/nodes/worker.py#L144-L154)). The worker prompt embeds the agent's
+[`Emitter`](backend/app/engine/events.py#L22) (an `asyncio.Queue`; `emit` uses `put_nowait` so it is safe to call
+from a cancelled task's cleanup). The runner drains it and the API serializes each event. Token events are
+emitted chunk-by-chunk as Ollama streams
+([`worker.py:156-166`](backend/app/engine/nodes/worker.py#L156-L166)). The worker prompt embeds the agent's
 `output_schema` so the model emits the exact required field names
-([`worker.py:126-138`](backend/app/engine/nodes/worker.py#L126-L138)).
+([`worker.py:145-152`](backend/app/engine/nodes/worker.py#L145-L152)).
 
 ## 5. API surface
 
@@ -191,13 +200,16 @@ All routes are unauthenticated (local-first, single user). Registered in
 | GET | `/crews/{id}` | One crew (workers + optional plan) | [`api/crews.py:24`](backend/app/api/crews.py#L24) |
 | POST | `/crews` | Create a crew (validates worker refs + plan) | [`api/crews.py:32`](backend/app/api/crews.py#L32) |
 | PUT | `/crews/{id}` | Update a crew | [`api/crews.py:40`](backend/app/api/crews.py#L40) |
-| POST | `/runs` | Start a run → `{run_id}` | [`api/runs.py:20`](backend/app/api/runs.py#L20) |
-| GET | `/runs/{id}/stream` | SSE stream of run events | [`api/runs.py:30`](backend/app/api/runs.py#L30) |
-| GET | `/runs/{id}` | Fetch a run's record (from in-memory store) | [`api/runs.py:53`](backend/app/api/runs.py#L53) |
+| POST | `/runs` | Start a run (JSON) → `{run_id}` | [`api/runs.py:33`](backend/app/api/runs.py#L33) |
+| POST | `/runs/upload` | Start a run from a multipart file upload (text extracted in the API) | [`api/runs.py:43`](backend/app/api/runs.py#L43) |
+| GET | `/runs` | List run history (durable; newest first) | [`api/runs.py:61`](backend/app/api/runs.py#L61) |
+| GET | `/runs/{id}/stream` | SSE stream of run events (with keep-alive) | [`api/runs.py:66`](backend/app/api/runs.py#L66) |
+| POST | `/runs/{id}/cancel` | Cancel an in-flight run → `cancelled` record | [`api/runs.py:92`](backend/app/api/runs.py#L92) |
+| GET | `/runs/{id}` | Fetch a run's record (memory, else `runs.sqlite`) | [`api/runs.py:100`](backend/app/api/runs.py#L100) |
 
 **SSE events** are defined once as a discriminated union in
 [`models/run.py:41-90`](backend/app/models/run.py#L41-L90) and serialized verbatim by the stream endpoint
-([`api/runs.py:37`](backend/app/api/runs.py#L37)). Emitted types and where they originate:
+([`api/runs.py:76`](backend/app/api/runs.py#L76)). Emitted types and where they originate:
 
 | `type` | Fields | Emitted by |
 |---|---|---|
@@ -210,7 +222,14 @@ All routes are unauthenticated (local-first, single user). Registered in
 | `done` | — | runner, always last ([`runner.py:110`](backend/app/engine/runner.py#L110)) |
 
 The stream endpoint sets `Cache-Control: no-cache` and `X-Accel-Buffering: no`
-([`api/runs.py:46-49`](backend/app/api/runs.py#L46-L49)) so tokens flush live instead of being held by a proxy.
+([`api/runs.py:84-87`](backend/app/api/runs.py#L84-L87)) so tokens flush live instead of being held by a proxy,
+and emits an SSE comment every 15 s while idle (the `KEEPALIVE` sentinel from the emitter) so the connection
+survives idle proxies. **One SSE consumer per run** — the stream launches the graph on first connect and drains a
+single queue; `GET /runs/{id}` is the way to inspect a run from elsewhere.
+
+Uploaded files arrive via `POST /runs/upload` (multipart); text is extracted in the API
+([`_extract_text`, `api/runs.py:109`](backend/app/api/runs.py#L109)) and handed to the engine as
+`uploaded_file` — the engine never sees a raw upload.
 
 ## 6. Configuration
 
@@ -239,21 +258,37 @@ the waves `[["triage"], ["threat_intel", "forensics"]]`.
 
 ## 7. Data flow (one run)
 
-1. **Start.** `POST /runs` → `Runner.start()` validates the crew and registers a `_Session` with a fresh
-   `run_id` ([`runner.py:52-60`](backend/app/engine/runner.py#L52-L60)). No work runs yet.
+1. **Start.** `POST /runs` (or `/runs/upload`) → `Runner.start()` validates the crew and registers a `_Session`
+   with a fresh `run_id` ([`runner.py:77-91`](backend/app/engine/runner.py#L77-L91)). No work runs yet.
 2. **Stream opens.** `GET /runs/{id}/stream` → `Runner.run_events()` lazily launches the graph as a background
-   task on first connect ([`runner.py:62-71`](backend/app/engine/runner.py#L62-L71)) and drains the emitter
+   task on first connect ([`runner.py:93-103`](backend/app/engine/runner.py#L93-L103)) and drains the emitter
    queue; the SSE endpoint serializes each event.
 3. **Plan.** The runner emits the `plan` event from the build-time waves
-   ([`runner.py:87`](backend/app/engine/runner.py#L87)).
-4. **Manager.** Reads memory (`crew_memory.read`), writes one task per worker.
+   ([`runner.py:161`](backend/app/engine/runner.py#L161)).
+4. **Manager.** Reads memory (`crew_memory.read`), writes one task per worker (its prompt includes any upload).
 5. **Worker waves.** Each wave runs concurrently; workers stream tokens, validate JSON, and merge results into
    state.
 6. **Leader.** Streams the prose `final` answer, then writes a summary via `crew_memory.write`.
-7. **Finish.** The runner stores the final `RunRecord` (results + answer) for `GET /runs/{id}` and always emits
-   `done` ([`runner.py:101-110`](backend/app/engine/runner.py#L101-L110)).
+7. **Finish.** The runner records the final `RunRecord` and always emits `done`
+   ([`runner.py:181-194`](backend/app/engine/runner.py#L181-L194)) — including on error or cancellation, so the
+   stream never hangs.
 
-**Memory boundary** is enforced by import discipline: only [`nodes/manager.py:16`](backend/app/engine/nodes/manager.py#L16)
+**Cancellation (Phase 2).** `POST /runs/{id}/cancel` → `Runner.cancel()` cancels the graph task; `_execute`
+catches `CancelledError`, marks the record `cancelled`, and emits `error` + `done`
+([`runner.py:181-186`](backend/app/engine/runner.py#L181-L186)). **Ollama outage:** a failed call raises
+`OllamaError`, surfaced as a worker `error` result or (for Manager/Leader) caught by `_execute` → `error` +
+`done`. Neither hangs the run.
+
+**Persistence (Phase 1).** The runner writes the `RunRecord` to the `RunStore` (`runs.sqlite`) at **start**
+(`pending`), at **running**, and at the **end** (`done`/`error`/`cancelled`) via `_persist`
+([`runner.py:196`](backend/app/engine/runner.py#L196)), so `GET /runs/{id}` and `GET /runs` survive a restart.
+Independently, the graph is compiled with a LangGraph `AsyncSqliteSaver`
+([`runner.py:153`](backend/app/engine/runner.py#L153)) and run with `thread_id == run_id`
+([`runner.py:175`](backend/app/engine/runner.py#L175)), checkpointing graph state per superstep to
+`checkpoints.sqlite`. Both stores are opened in the [`main.py`](backend/app/main.py) lifespan and attached via
+`runner.configure(...)`; the headless/test path runs with neither.
+
+**Memory boundary** is enforced by import discipline: only [`nodes/manager.py:17`](backend/app/engine/nodes/manager.py#L17)
 imports `crew_memory` (for `read`), and only [`nodes/leader.py:16`](backend/app/engine/nodes/leader.py#L16) imports
 it (for `write`). Workers never import it.
 
@@ -265,10 +300,14 @@ it (for `write`). Workers never import it.
   use. Embeddings come from local Ollama (`EMBED_MODEL`). The Leader writes a compact summary keyed by `run_id`
   ([`crew_memory.py:65`](backend/app/memory/crew_memory.py#L65)); the Manager reads top-k (default 5)
   ([`crew_memory.py:47`](backend/app/memory/crew_memory.py#L47)). Crews never share a collection.
-- **Run records.** Held **in memory** by the `Runner` for the process lifetime
-  ([`runner.py:50`](backend/app/engine/runner.py#L50)) — there is no persistent run history yet (the SQLite
-  checkpointer is deferred; see [§10](#10-known-issues--deferred)). `data/checkpoints.sqlite` is reserved by
-  [`settings.py`](backend/app/settings.py) but not yet written.
+- **Run history (`data/runs.sqlite`).** A single `runs` table of `RunRecord`s (status, plan, results JSON,
+  answer, error, timestamps), written by [`persistence/run_store.py`](backend/app/persistence/run_store.py)
+  (`upsert`/`get`/`list`, one connection per op). The runner keeps live runs in memory
+  ([`runner.py:64`](backend/app/engine/runner.py#L64)) and falls back to this store, so records survive a restart.
+- **LangGraph checkpoints (`data/checkpoints.sqlite`).** `AsyncSqliteSaver` persists CrewState per superstep,
+  keyed by `thread_id == run_id` — durable graph state for inspection/resume. Opened in the lifespan
+  ([`main.py:30`](backend/app/main.py#L30)). Both DB paths come from [`settings.py`](backend/app/settings.py)
+  (`runs_db`, `checkpoint_db`).
 
 ## 9. Design decisions
 
@@ -283,8 +322,10 @@ it (for `write`). Workers never import it.
   exact and the engine simple, at the cost of deferring runtime Manager-decided reordering (see [§4](#4-orchestration)).
 - **Generic worker node.** One factory parameterized by `AgentConfig` keeps "config is data" true — adding an
   agent is a new YAML file, never engine code.
-- **In-memory run registry for v1.** Avoids wiring the async SQLite checkpointer before the slice is proven;
-  the seam to add it is a one-line `.compile(checkpointer=…)`.
+- **Two persistence stores, by concern (Phase 1).** A LangGraph checkpointer (`checkpoints.sqlite`) holds
+  low-level graph state for resume/inspection; a separate `RunStore` (`runs.sqlite`) holds the API-facing
+  `RunRecord` (status/plan/results/answer). Keeping them apart avoids forcing run-status semantics onto the
+  checkpoint schema, and lets `GET /runs` list history cheaply.
 
 ## 10. Known issues / deferred
 
@@ -293,11 +334,15 @@ No `KNOWN_ISSUES.md` yet; tracked inline until one is warranted.
 - **~~Not executed end-to-end.~~ Resolved (Phase 0).** Verified headless + over SSE against live Ollama on
   `qwen2.5:7b` + `nomic-embed-text`. (Quality caveat: a 7B local model needs the schema shown in-prompt to emit
   correct field names — now done in [`worker.py:126-138`](backend/app/engine/nodes/worker.py#L126-L138).)
-- **SQLite checkpointer deferred.** Run state lives in process memory; restarting the server loses history.
-  Build-order step 5's checkpointer is the next backend task.
+- **~~SQLite checkpointer / durable run history deferred.~~ Resolved (Phase 1).** `checkpoints.sqlite` (graph
+  state) + `runs.sqlite` (`RunRecord`s) are wired; verified that `GET /runs/{id}` survives a full restart.
 - **Runtime Manager reordering deferred.** See [§4](#4-orchestration) design note.
-- **Single SSE consumer per run.** `run_events` launches the graph on first connect and drains one queue; a
-  second concurrent reader of the same run would compete for events. Fine for the single-user local model.
+- **Single SSE consumer per run — by design (Phase 2).** The stream launches the graph on first connect and
+  drains one queue; a second concurrent reader would compete for events. This is intentional for the
+  single-user local model and is documented on the endpoint; `GET /runs/{id}` covers out-of-band inspection. A
+  keep-alive comment is emitted every 15 s so idle proxies don't drop the stream.
+- **Upload extraction is text-only (Phase 2).** `POST /runs/upload` decodes uploads as UTF-8; PDF/DOCX
+  extraction is a future enhancement. Binary uploads decode leniently.
 - **Frontend not built.** Build-order step 6. The SSE event contract in [§5](#5-api-surface) is what it will
   consume.
 
@@ -306,7 +351,7 @@ No `KNOWN_ISSUES.md` yet; tracked inline until one is warranted.
 ```bash
 uv sync                                              # resolve + install deps into .venv
 cp .env.example .env                                 # adjust OLLAMA_BASE_URL / models if needed
-ollama pull llama3.1:8b && ollama pull nomic-embed-text
+ollama pull qwen2.5:7b && ollama pull nomic-embed-text
 
 # Headless (no web layer) — exercises the engine directly:
 uv run python scripts/run_crew.py soc_crew "Investigate failed SSH logins from 203.0.113.7 on web-01."

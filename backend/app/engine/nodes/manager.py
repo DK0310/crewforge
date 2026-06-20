@@ -11,6 +11,7 @@ from collections.abc import Awaitable, Callable
 
 from backend.app.engine.events import Emitter
 from backend.app.engine.json_utils import extract_json
+from backend.app.engine.prompt_utils import source_material_block
 from backend.app.engine.state import MANAGER_ID, CrewState
 from backend.app.llm import OllamaClient
 from backend.app.memory import crew_memory  # ONLY the manager imports `read`
@@ -36,10 +37,18 @@ def make_manager_node(
         await emitter.emit(AgentStatusEvent(agent_id=MANAGER_ID, status="running"))
 
         # 1. Read relevant memory (the manager is the ONLY reader).
-        context = await crew_memory.read(state["crew_id"], state["user_input"])
+        context = await crew_memory.read(
+            state["crew_id"], state["user_input"], k=settings.manager_memory_k
+        )
 
         # 2. Ask the LLM to write one task per worker.
-        prompt = _assemble_prompt(workers, state["user_input"], context)
+        prompt = _assemble_prompt(
+            workers,
+            state["user_input"],
+            context,
+            state.get("uploaded_file"),
+            settings.max_upload_chars,
+        )
         raw = await _collect(ollama.generate(prompt, model=model, system=role.system_prompt))
         tasks = _parse_tasks(raw, worker_ids, state["user_input"])
 
@@ -49,17 +58,27 @@ def make_manager_node(
     return manager_node
 
 
-def _assemble_prompt(workers: list[AgentConfig], user_input: str, context: str) -> str:
+def _assemble_prompt(
+    workers: list[AgentConfig],
+    user_input: str,
+    context: str,
+    uploaded_file: str | None,
+    max_upload_chars: int,
+) -> str:
     roster = "\n".join(f"- {w.id}: {w.description}" for w in workers)
     memory_block = context.strip() or "(no relevant past runs)"
     ids = ", ".join(w.id for w in workers)
-    return (
-        f"User request:\n{user_input}\n\n"
-        f"Relevant memory of past runs:\n{memory_block}\n\n"
-        f"Available workers:\n{roster}\n\n"
+    parts = [f"User request:\n{user_input}"]
+    source = source_material_block(uploaded_file, max_upload_chars)
+    if source:
+        parts.append(source)
+    parts.append(f"Relevant memory of past runs:\n{memory_block}")
+    parts.append(f"Available workers:\n{roster}")
+    parts.append(
         f"Return ONLY a JSON object whose keys are exactly these worker ids "
         f"[{ids}] and whose values are the task instruction for each worker."
     )
+    return "\n\n".join(parts)
 
 
 def _parse_tasks(raw: str, worker_ids: list[str], user_input: str) -> dict[str, str]:

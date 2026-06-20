@@ -56,6 +56,10 @@ class OllamaClient:
                         yield chunk
                     if data.get("done"):
                         break
+        except httpx.ConnectError as exc:
+            raise OllamaError(
+                f"Cannot reach Ollama at {self._client.base_url} — is it running? ({exc})"
+            ) from exc
         except httpx.HTTPError as exc:
             raise OllamaError(f"Ollama generate failed ({model}): {exc}") from exc
 

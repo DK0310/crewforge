@@ -36,6 +36,7 @@ def build(
     emitter: Emitter,
     ollama: OllamaClient | None = None,
     settings: Settings | None = None,
+    checkpointer: object | None = None,
 ) -> BuiltGraph:
     settings = settings or get_settings()
     ollama = ollama or get_ollama_client()
@@ -76,7 +77,10 @@ def build(
     g.set_entry_point(MANAGER_ID)
     _wire_waves(g, plan)
 
-    return BuiltGraph(graph=g.compile(), plan=plan)
+    # `checkpointer` (a LangGraph saver, e.g. AsyncSqliteSaver) persists graph state
+    # per superstep, keyed by the `thread_id` passed at run time. None -> no
+    # persistence (headless/test path behaves exactly as before).
+    return BuiltGraph(graph=g.compile(checkpointer=checkpointer), plan=plan)
 
 
 def _wire_waves(g: StateGraph, plan: list[list[str]]) -> None:

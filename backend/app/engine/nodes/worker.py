@@ -13,6 +13,7 @@ from collections.abc import Awaitable, Callable
 
 from backend.app.engine.events import Emitter
 from backend.app.engine.json_utils import JsonValidationError, validate_output
+from backend.app.engine.prompt_utils import source_material_block
 from backend.app.engine.state import CrewState
 from backend.app.llm import OllamaClient
 from backend.app.models import (
@@ -44,7 +45,9 @@ def make_worker_node(
 
         task = state["tasks"].get(agent.id, state["user_input"])
         upstream = _upstream_outputs(state, deps)
-        prompt = _assemble_prompt(agent, task, upstream)
+        prompt = _assemble_prompt(
+            agent, task, upstream, state.get("uploaded_file"), settings.max_upload_chars
+        )
 
         # --- TOOL SEAM (reserved, not implemented in v1) ---------------------
         # Tool-calling would slot in here: inspect `agent.tools`, let the model
@@ -124,8 +127,17 @@ def _upstream_outputs(state: CrewState, deps: set[str]) -> dict[str, dict]:
     return out
 
 
-def _assemble_prompt(agent: AgentConfig, task: str, upstream: dict[str, dict]) -> str:
+def _assemble_prompt(
+    agent: AgentConfig,
+    task: str,
+    upstream: dict[str, dict],
+    uploaded_file: str | None,
+    max_upload_chars: int,
+) -> str:
     parts = [f"Your task:\n{task}"]
+    source = source_material_block(uploaded_file, max_upload_chars)
+    if source:
+        parts.append(source)
     if upstream:
         parts.append(
             "Upstream findings you may rely on (JSON):\n"

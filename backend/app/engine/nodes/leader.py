@@ -25,9 +25,7 @@ from backend.app.models import (
 from backend.app.settings import Settings
 
 # Keep prompts within the context window: cap how much of each worker's output we
-# forward, and how long a single string field may be.
-_MAX_ARRAY_ITEMS = 10
-_MAX_STR_LEN = 800
+# forward, and how long a single string field may be. Configurable via settings.
 
 LeaderNode = Callable[[CrewState], Awaitable[dict]]
 
@@ -44,7 +42,12 @@ def make_leader_node(
     async def leader_node(state: CrewState) -> dict:
         await emitter.emit(AgentStatusEvent(agent_id=LEADER_ID, status="running"))
 
-        prompt = _assemble_prompt(state["user_input"], state["results"])
+        prompt = _assemble_prompt(
+            state["user_input"],
+            state["results"],
+            settings.leader_max_array_items,
+            settings.leader_max_str_len,
+        )
         buf: list[str] = []
         async for chunk in ollama.generate(
             prompt, model=model, system=role.system_prompt, stream=True
@@ -70,12 +73,17 @@ def make_leader_node(
     return leader_node
 
 
-def _assemble_prompt(user_input: str, results: dict[str, AgentResult]) -> str:
+def _assemble_prompt(
+    user_input: str,
+    results: dict[str, AgentResult],
+    max_array_items: int,
+    max_str_len: int,
+) -> str:
     """Pass selected, summarized structured fields — never raw concatenated text —
     so the Leader prompt stays within the model's context window.
     """
     findings = {
-        agent_id: _compact(res.output)
+        agent_id: _compact(res.output, max_array_items, max_str_len)
         for agent_id, res in results.items()
         if res.status == "done" and res.output
     }
@@ -94,14 +102,14 @@ def _assemble_prompt(user_input: str, results: dict[str, AgentResult]) -> str:
     )
 
 
-def _compact(output: dict) -> dict:
+def _compact(output: dict, max_array_items: int, max_str_len: int) -> dict:
     """Truncate long arrays/strings so one verbose worker can't blow the budget."""
     compacted: dict = {}
     for key, value in output.items():
         if isinstance(value, list):
-            compacted[key] = value[:_MAX_ARRAY_ITEMS]
-        elif isinstance(value, str) and len(value) > _MAX_STR_LEN:
-            compacted[key] = value[:_MAX_STR_LEN] + "…"
+            compacted[key] = value[:max_array_items]
+        elif isinstance(value, str) and len(value) > max_str_len:
+            compacted[key] = value[:max_str_len] + "…"
         else:
             compacted[key] = value
     return compacted

@@ -91,11 +91,11 @@ RunEvent = Annotated[
 
 
 class RunRecord(BaseModel):
-    """A completed (or in-flight) run, returned by `GET /runs/{id}`."""
+    """A completed (or in-flight) run, returned by `GET /runs/{id}` and `GET /runs`."""
 
     run_id: str
     crew_id: str
-    status: Literal["running", "done", "error"]
+    status: Literal["pending", "running", "done", "error", "cancelled"]
     plan: list[list[str]] = Field(default_factory=list)
     results: dict[str, AgentResult] = Field(default_factory=dict)
     final_answer: str | None = None
