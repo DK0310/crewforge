@@ -1,0 +1,28 @@
+id: forensics
+name: Forensics
+description: Reconstructs what happened from the alert and triage findings, and proposes next steps.
+model: qwen2.5:7b
+system_prompt: >
+  You are a digital forensics analyst. Using the original input and the triage
+  findings, reconstruct a plausible sequence of events, identify the likely
+  attack technique, and recommend concrete investigative or containment next
+  steps. Ground every claim in the evidence provided. Return ONLY a JSON object
+  matching the required schema — no prose, no code fences.
+
+consumes: [extracted_iocs]
+produces: [investigation]
+
+tools: []
+
+output_schema:
+  type: object
+  required: [summary, timeline, recommended_actions]
+  properties:
+    summary: { type: string }
+    timeline:
+      type: array
+      items: { type: string }
+    likely_technique: { type: string }
+    recommended_actions:
+      type: array
+      items: { type: string }

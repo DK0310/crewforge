@@ -1,0 +1,30 @@
+id: threat_intel
+name: Threat Intel
+description: Enriches indicators of compromise with reputation and known associations.
+model: qwen2.5:7b
+system_prompt: >
+  You are a threat intelligence analyst. Given indicators extracted from an alert,
+  assess their reputation and known associations based on your knowledge. For each
+  indicator give a verdict (malicious, suspicious, benign, unknown) and a short
+  rationale. Do not invent specific external feed data you do not have. Return ONLY
+  a JSON object matching the required schema — no prose, no code fences.
+
+consumes: [extracted_iocs]
+produces: [ioc_reputation]
+
+tools: []
+
+output_schema:
+  type: object
+  required: [summary, ioc_reputation]
+  properties:
+    summary: { type: string }
+    ioc_reputation:
+      type: array
+      items:
+        type: object
+        required: [indicator, verdict]
+        properties:
+          indicator: { type: string }
+          verdict: { type: string, enum: [malicious, suspicious, benign, unknown] }
+          rationale: { type: string }

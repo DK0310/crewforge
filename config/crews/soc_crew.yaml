@@ -1,0 +1,25 @@
+id: soc_crew
+name: SOC Analysis Crew
+description: Investigates a security alert end to end — triage, enrichment, forensics.
+
+# Workers chosen for this crew. Manager and Leader are NOT listed — the engine
+# injects them for every crew.
+workers:
+  - triage
+  - threat_intel
+  - forensics
+
+# Explicit execution plan (advanced mode). The engine honors this exactly and the
+# Manager does not decide order. triage runs first; threat_intel and forensics
+# both depend on triage and so run in parallel in the second wave.
+execution_plan:
+  - agent: triage
+    depends_on: []
+  - agent: threat_intel
+    depends_on: [triage]
+  - agent: forensics
+    depends_on: [triage]
+
+# Use the default system-role prompts from config/system_roles/.
+manager_prompt_override: null
+leader_prompt_override: null

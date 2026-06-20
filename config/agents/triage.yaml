@@ -1,0 +1,26 @@
+id: triage
+name: Triage
+description: First-pass classification of an alert and extraction of indicators of compromise.
+model: qwen2.5:7b
+system_prompt: >
+  You are a SOC triage analyst. Read the alert or input you are given, classify
+  its severity, decide whether it looks like a true positive worth investigating,
+  and extract any indicators of compromise (IPs, domains, file hashes, users).
+  Be precise and do not speculate beyond the evidence. Return ONLY a JSON object
+  matching the required schema — no prose, no code fences.
+
+consumes: []
+produces: [extracted_iocs]
+
+tools: []
+
+output_schema:
+  type: object
+  required: [summary, severity, extracted_iocs]
+  properties:
+    summary: { type: string }
+    severity: { type: string, enum: [low, medium, high, critical] }
+    likely_true_positive: { type: boolean }
+    extracted_iocs:
+      type: array
+      items: { type: string }
