@@ -33,8 +33,9 @@ lives in agent YAML under [`config/`](config/), never in `engine/`.
 State: build-order steps 1–5 from [`CLAUDE.md`](.claude/CLAUDE.md) are implemented (schemas + config loading,
 Ollama client, engine, FastAPI + SSE, memory), plus **Phase 1 persistence** (LangGraph SQLite checkpointer +
 durable run history) and **Phase 2 hardening** (file upload, run cancellation, Ollama-failure handling,
-configurable context budget, SSE keep-alive). Step 6 (frontend) is **not yet built** —
-see [§10](#10-known-issues--deferred).
+configurable context budget, SSE keep-alive). **Phase 3 (frontend)** is built: a React + Tailwind + TypeScript
+app in [`frontend/`](frontend/) consumes the SSE contract live (see [§3](#3-project-structure) tree and
+[§10](#10-known-issues--deferred)).
 
 ## 2. Tech stack
 
@@ -119,7 +120,23 @@ crewforge/
 │       └── runs.py                    # POST /runs(+/upload), /runs/{id}/stream, /cancel, GET /runs(/{id})
 │
 ├── scripts/run_crew.py                # headless run (no FastAPI/SSE) — exercises the engine directly
-└── tests/test_planner.py              # unit tests for the pure planner
+├── tests/test_planner.py              # unit tests for the pure planner
+│
+└── frontend/                          # React + Tailwind v4 + TS (Vite); design per DESIGN.md
+    ├── index.html                     # loads IBM Plex Sans/Mono; dark color-scheme
+    ├── vite.config.ts                 # dev proxy: /agents /crews /runs /health → :8000
+    └── src/
+        ├── main.tsx                   # router (createBrowserRouter)
+        ├── index.css                  # Tailwind v4 @theme tokens (OKLCH, AA-verified)
+        ├── types.ts                   # TS mirror of models/run.py (RunEvent union, RunRecord, …)
+        ├── api/client.ts              # fetch wrappers over the REST surface
+        ├── hooks/
+        │   ├── useRunStream.ts        # EventSource + exhaustive RunEvent reducer (rAF-batched)
+        │   └── useAsync.ts            # load/loading/error/reload for REST reads
+        ├── lib/status.tsx             # status → icon+label+color (state is never color-only)
+        ├── components/                # AppShell, AgentLanePanel (signature), LeaderPanel,
+        │   │                          #   StartRun, RunRow, PageHeader, icons, ui (primitives)
+        └── pages/                     # Dashboard, RunView (hero), RunHistory, Composer, Library
 ```
 
 ## 4. Orchestration
@@ -343,8 +360,13 @@ No `KNOWN_ISSUES.md` yet; tracked inline until one is warranted.
   keep-alive comment is emitted every 15 s so idle proxies don't drop the stream.
 - **Upload extraction is text-only (Phase 2).** `POST /runs/upload` decodes uploads as UTF-8; PDF/DOCX
   extraction is a future enhancement. Binary uploads decode leniently.
-- **Frontend not built.** Build-order step 6. The SSE event contract in [§5](#5-api-surface) is what it will
-  consume.
+- **~~Frontend not built.~~ Resolved (Phase 3).** A React + Tailwind v4 + TypeScript app (Vite) lives in
+  [`frontend/`](frontend/) and consumes the [§5](#5-api-surface) SSE contract. The run view is driven entirely by
+  a typed `RunEvent` reducer ([`useRunStream.ts`](frontend/src/hooks/useRunStream.ts), mirroring
+  [`models/run.py:41-90`](backend/app/models/run.py#L41-L90)); the visual system follows
+  [`DESIGN.md`](DESIGN.md). Surfaces: Dashboard, Run view (hero), Composer (beginner + opt-in step designer),
+  History, Library. `tsc -b && vite build` passes. Live verification against a running backend is pending the
+  developer's check.
 
 ## Running it
 

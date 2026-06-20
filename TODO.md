@@ -80,25 +80,31 @@ Robustness items from ARCHITECTURE.md §10 and the spec's file-upload path. No U
 The SSE contract in ARCHITECTURE.md §5 is the interface. **Look-and-feel goes through Impeccable** — do not design
 UI ad hoc (see [`IMPECCABLE_SETUP.md`](IMPECCABLE_SETUP.md) and the `crewforge-frontend` skill).
 
-- [ ] One-time setup: `npx impeccable install --providers=claude --scope=project`, reload, then
-      `/impeccable init` (pick **product**) → commit `PRODUCT.md` / `DESIGN.md`.
-- [ ] Scaffold `frontend/` (React + Tailwind + TypeScript, per BUILD_SPEC tree): `package.json`,
-      `tailwind.config.js`, `src/main.tsx`, pages, components, `api/` client.
-- [ ] **Typed SSE client hook** `useRunStream` — mirror the backend `RunEvent` union
-      ([`models/run.py:41-90`](backend/app/models/run.py#L41-L90)) as a TS discriminated union; reduce
-      `plan/agent_status/token/agent_result/final/error/done` into run state (cheap per-agent token append).
-- [ ] **Run view** — lay out waves from `plan`; per-agent cards with status pills + live token panels; Leader
-      panel renders `final` as prose. Top-to-bottom layout mirrors execution.
-- [ ] **Crew composer** — beginner tier (pick workers, name crew) by default; **advanced step designer**
+- [x] One-time setup: Impeccable installed (plugin), `/impeccable init` run (register: **product**) → wrote
+      [`PRODUCT.md`](PRODUCT.md) + seed [`DESIGN.md`](DESIGN.md). _(User to commit both.)_ Re-run
+      `/impeccable document` once components exist to capture real tokens + sidecar.
+- [x] Scaffold `frontend/` (React + Tailwind **v4** + TypeScript, **Vite**): `package.json`, `vite.config.ts`
+      (dev proxy → :8000), `src/main.tsx`, pages, components, `api/` client. `tsc -b && vite build` green.
+- [x] **Typed SSE client hook** `useRunStream` — mirrors the backend `RunEvent` union
+      ([`models/run.py:41-90`](backend/app/models/run.py#L41-L90)) as a TS discriminated union with an
+      **exhaustive** reducer; token bursts are rAF-batched and appended per-lane
+      ([`frontend/src/hooks/useRunStream.ts`](frontend/src/hooks/useRunStream.ts)).
+- [x] **Run view (hero)** — waves laid out from `plan`, top-to-bottom = execution; per-agent lanes with
+      status pills + live mono token panels + validated JSON; Leader renders `final` as **prose** (sans, not
+      mono). Handles live (stream) *and* historical (stored record) runs; cancel button while live.
+- [x] **Crew composer** — beginner tier (pick workers, name crew) by default; **advanced step designer**
       (explicit `depends_on` → `execution_plan`) behind an opt-in toggle. Manager/Leader shown as fixed,
       non-removable roles, never in the worker picker.
-- [ ] **Input** — prompt + optional file upload (wires to Phase 2 upload endpoint).
-- [ ] Wire CRUD pages to `/agents` and `/crews`; point the client at the FastAPI base URL (CORS already open in
-      [`main.py`](backend/app/main.py)).
-- [ ] Review passes: `/impeccable shape` before building, `craft` to build, then `critique` / `audit` / `polish`.
-- [ ] Add the real frontend file tree + route table to ARCHITECTURE.md §3/§5 (the section the staleness note says
-      drifts fastest).
-- 🎯 **Acceptance:** compose `soc_crew` in the UI, run it, and watch waves + tokens stream to a final answer.
+- [x] **Input** — prompt + optional file upload (wires to the Phase 2 `/runs/upload` endpoint).
+- [x] Wired list/read for `/agents` and `/crews` (Library) + crew create/update (Composer); client uses the
+      Vite dev proxy (CORS already open in [`main.py`](backend/app/main.py)). _Agent create/edit UI deferred —
+      agents are authored as YAML/prompts; documented as view-only in the Library for now._
+- [x] Review passes: `/impeccable init` (PRODUCT.md + seed DESIGN.md) done; built to DESIGN.md as the contract
+      (image-gen visual-direction step N/A in this harness). Design hook ran clean on every file. _Pending:
+      `/impeccable critique` / `audit` / `polish` once the developer eyeballs it live._
+- [x] Added the real frontend file tree to ARCHITECTURE.md §3 and a §10 resolution note.
+- 🎯 **Acceptance:** _ready to verify_ — `uv run uvicorn backend.app.main:app` + `npm --prefix frontend run dev`,
+      open `:5173`, pick `soc_crew`, run, watch waves + tokens stream to a final answer.
 
 ---
 

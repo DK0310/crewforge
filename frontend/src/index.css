@@ -1,0 +1,151 @@
+@import "tailwindcss";
+
+/*
+  CrewForge design tokens — "The Mission Control Reading Room" (see DESIGN.md).
+  Dark-first, chroma-0 near-black surface; one amber signal reserved for
+  live/active/selected. All text pairs verified ≥4.5:1 (WCAG AA) against the
+  surface they sit on. OKLCH is the canonical format.
+*/
+
+@theme {
+  /* Surfaces — depth is tonal lightness steps, not shadow (Flat-By-Default). */
+  --color-bg: oklch(0.165 0 0);
+  --color-surface: oklch(0.205 0.006 250);
+  --color-surface-2: oklch(0.245 0.006 250);
+
+  /* Text */
+  --color-ink: oklch(0.965 0 0);
+  --color-muted: oklch(0.74 0.008 250); /* secondary; held to ≥4.5:1, no faint gray */
+  --color-hairline: oklch(0.3 0.008 250); /* 1px dividers/borders only */
+
+  /* The one amber signal (One Voice Rule: ≤10% of any screen). */
+  --color-signal: oklch(0.84 0.165 91.3);
+  --color-signal-ink: oklch(0.165 0 0); /* dark text on an amber fill */
+  --color-signal-dim: oklch(0.84 0.165 91.3 / 0.14); /* glow / wash */
+
+  /* Status — never the only carrier of state (Status-Is-Not-Only-Color Rule). */
+  --color-done: oklch(0.74 0.14 155);
+  --color-error: oklch(0.66 0.2 25);
+  --color-running: var(--color-signal);
+  --color-pending: oklch(0.74 0.008 250);
+
+  /* Type — IBM Plex superfamily: sans for UI, mono for everything the engine emits. */
+  --font-sans: "IBM Plex Sans", system-ui, -apple-system, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, "SF Mono", "Cascadia Code", monospace;
+
+  /* Fixed rem type scale (product UI, ~1.2 ratio) — no fluid clamp headings. */
+  --text-display: 1.75rem;
+  --text-display--line-height: 1.2;
+  --text-headline: 1.25rem;
+  --text-headline--line-height: 1.3;
+  --text-title: 1rem;
+  --text-title--line-height: 1.4;
+  --text-body: 0.9375rem;
+  --text-body--line-height: 1.6;
+  --text-label: 0.8125rem;
+  --text-label--line-height: 1.4;
+  --text-data: 0.875rem;
+  --text-data--line-height: 1.5;
+
+  --radius-sm: 4px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+
+  /* Motion — Responsive: 150–250ms, reports state (DESIGN §Overview). */
+  --ease-out-quart: cubic-bezier(0.25, 1, 0.5, 1);
+
+  /* Semantic z-scale — never arbitrary 9999s. */
+  --z-sticky: 100;
+  --z-dropdown: 200;
+  --z-modal-backdrop: 300;
+  --z-modal: 400;
+  --z-toast: 500;
+}
+
+@layer base {
+  * {
+    border-color: var(--color-hairline);
+  }
+
+  html {
+    color-scheme: dark;
+  }
+
+  body {
+    margin: 0;
+    background-color: var(--color-bg);
+    color: var(--color-ink);
+    font-family: var(--font-sans);
+    font-size: var(--text-body);
+    line-height: 1.6;
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+
+  h1,
+  h2,
+  h3 {
+    text-wrap: balance;
+    letter-spacing: -0.01em;
+  }
+
+  /* Focus is visible against the dark surface (a11y: keyboard reachable). */
+  :focus-visible {
+    outline: 2px solid var(--color-signal);
+    outline-offset: 2px;
+    border-radius: 2px;
+  }
+
+  ::selection {
+    background: var(--color-signal-dim);
+  }
+
+  /* A quiet, on-surface scrollbar — not a reinvented custom control. */
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: var(--color-hairline) transparent;
+  }
+}
+
+/*
+  The one place glow is earned: a diffuse amber halo + 1px ring under the
+  *active* agent/wave. This is the visual heartbeat of a live run. Resting
+  surfaces stay flat (Flat-By-Default Rule).
+*/
+.live-glow {
+  box-shadow:
+    0 0 0 1px var(--color-signal),
+    0 8px 36px -10px var(--color-signal-dim);
+}
+
+/* Live token streams: a thin amber cursor that respects reduced motion. */
+.stream-caret {
+  display: inline-block;
+  width: 0.5ch;
+  height: 1em;
+  margin-left: 1px;
+  translate: 0 0.15em;
+  background: var(--color-signal);
+  animation: cursor-blink 1.05s steps(1) infinite;
+}
+
+@keyframes cursor-blink {
+  0%,
+  49% {
+    opacity: 1;
+  }
+  50%,
+  100% {
+    opacity: 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+  }
+}
